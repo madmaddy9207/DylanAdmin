@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #000000;
+  --acid: #CCFF00;
+}
+
+html, body, #__next {
+  height: 100%;
+}
+
+body {
+  background: #ffffff;
+  color: var(--ink);
+}
+
+/* Utility helpers for the white+acid aesthetic */
+.border-ink { border-color: var(--ink); }
+.bg-acid { background-color: var(--acid); }
+.text-ink { color: var(--ink); }
+.text-acid { color: var(--acid); }
+.hover\:bg-ink:hover { background: var(--ink); }
+.hover\:text-white:hover { color: #fff; }
+
+/* Snappy transitions */
+* { transition-property: color, background-color, box-shadow, border-color; transition-duration: 100ms; }

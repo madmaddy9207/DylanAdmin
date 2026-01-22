@@ -1,0 +1,939 @@
+import React, { useState, useEffect, ChangeEvent, useMemo, useCallback } from 'react';
+import Head from 'next/head';
+import {
+    Plus,
+    Save,
+    Music,
+    Trash2,
+    Edit2,
+    Loader2,
+    X,
+    Copy as CopyIcon
+} from 'lucide-react';
+import { supabase } from '../src/lib/supabaseClient';
+import Layout from '../components/Layout';
+
+interface Song {
+    id: string;
+    title: string;
+    artist: string | null;
+    album: string | null;
+    genre: string | null;
+    language: string | null;
+    lyrics: string | null;
+    chords: string | null;
+    lyrics_chordpro?: string | null;
+    status: string | null;
+    featured: boolean;
+    created_at: string;
+    cover_url?: string | null;
+    category_id?: string | null;
+    duration?: number | null;
+    pending_lyrics?: string | null;
+    pending_chords?: string | null;
+    lyrics_approved?: boolean | null;
+    chords_approved?: boolean | null;
+}
+
+export default function LyricsPage() {
+    const [songs, setSongs] = useState<Song[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [isEditing, setIsEditing] = useState(false);
+
+    // Form State
+    const [title, setTitle] = useState('');
+    const [artist, setArtist] = useState('');
+    const [album, setAlbum] = useState('');
+    const [genre, setGenre] = useState('');
+    const [language, setLanguage] = useState('');
+    const [status, setStatus] = useState('draft');
+    const [featured, setFeatured] = useState(false);
+    const [lyrics, setLyrics] = useState('');
+    const [chords, setChords] = useState('');
+    const [lyricsChordpro, setLyricsChordpro] = useState('');
+    const [coverUrl, setCoverUrl] = useState<string | null>(null);
+    const [categoryId, setCategoryId] = useState<string>('');
+    const [duration, setDuration] = useState<string>('');
+    const [lyricsApproved, setLyricsApproved] = useState<boolean>(true);
+    const [chordsApproved, setChordsApproved] = useState<boolean>(true);
+    const [pendingLyrics, setPendingLyrics] = useState<string>('');
+    const [pendingChords, setPendingChords] = useState<string>('');
+
+    const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+
+    const [editId, setEditId] = useState<string | null>(null);
+    const [isSaving, setIsSaving] = useState(false);
+    const [activeTab, setActiveTab] = useState<'details' | 'content' | 'moderation'>('details');
+    const [query, setQuery] = useState('');
+    const [statusFilter, setStatusFilter] = useState<string>('');
+    type Toast = { id: string; type: 'success'|'error'; message: string };
+    const [toasts, setToasts] = useState<Toast[]>([]);
+    const [showCatMgr, setShowCatMgr] = useState(false);
+    const [newCategoryName, setNewCategoryName] = useState('');
+
+    // Toast queue helper
+    const enqueueToast = (t: Omit<Toast,'id'>) => {
+        const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const toast = { id, ...t } as Toast;
+        setToasts((prev) => [...prev, toast]);
+        setTimeout(() => {
+            setToasts((prev) => prev.filter(x => x.id !== id));
+        }, 2400);
+    };
+
+    useEffect(() => {
+        fetchSongs();
+        fetchCategories();
+    }, []);
+
+    // Keyboard shortcut: Ctrl/Cmd+S to save
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            const isSave = (e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 's');
+            if (isSave) {
+                e.preventDefault();
+                if (isEditing && !isSaving) {
+                    // Trigger form submit programmatically
+                    const btn = document.getElementById('save-song-btn') as HTMLButtonElement | null;
+                    btn?.click();
+                }
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isEditing, isSaving]);
+
+    const fetchSongs = async () => {
+        try {
+            setLoading(true);
+            const { data, error } = await supabase
+                .from('songs')
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            if (error) {
+                console.error('Error fetching songs:', error);
+            } else {
+                setSongs(data || []);
+            }
+        } catch (error) {
+            console.error('Error:', error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const fetchCategories = async () => {
+        try {
+            const { data, error } = await supabase
+                .from('categories')
+                .select('id,name')
+                .order('name', { ascending: true });
+            if (error) {
+                // If categories table doesn't exist, keep empty list silently
+                console.warn('Categories fetch error:', error.message);
+                return;
+            }
+            setCategories((data as any[]) || []);
+        } catch (e: any) {
+            console.warn('Categories fetch exception:', e?.message ?? e);
+        }
+    };
+
+    const resetForm = () => {
+        setTitle('');
+        setArtist('');
+        setAlbum('');
+        setGenre('');
+        setLanguage('');
+        setStatus('draft');
+        setFeatured(false);
+        setLyrics('');
+        setChords('');
+        setLyricsChordpro('');
+        setCoverUrl(null);
+        setCategoryId('');
+        setDuration('');
+        setLyricsApproved(true);
+        setChordsApproved(true);
+        setPendingLyrics('');
+        setPendingChords('');
+        setEditId(null);
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!title) return;
+
+        try {
+            setIsSaving(true);
+            const parsedDuration = duration ? Number(duration) : null;
+            const songData: any = {
+                title,
+                artist: artist || null,
+                album: album || null,
+                genre: genre || null,
+                language: language || null,
+                status: status || 'draft',
+                featured: featured,
+                lyrics: lyrics || null,
+                chords: chords || null,
+                lyrics_chordpro: lyricsChordpro || null,
+                cover_url: coverUrl || null,
+                category_id: categoryId || null,
+                duration: parsedDuration,
+                pending_lyrics: pendingLyrics || null,
+                pending_chords: pendingChords || null,
+                lyrics_approved: lyricsApproved,
+                chords_approved: chordsApproved
+            };
+
+            if (editId) {
+                // Update
+                const { error } = await supabase
+                    .from('songs')
+                    .update(songData)
+                    .eq('id', editId);
+                if (error) throw error;
+            } else {
+                // Create
+                const { error } = await supabase
+                    .from('songs')
+                    .insert([songData]);
+                if (error) throw error;
+            }
+
+            // Reset and refresh
+            resetForm();
+            setIsEditing(false);
+            fetchSongs();
+            enqueueToast({ type: 'success', message: editId ? 'Song updated' : 'Song created' });
+        } catch (error) {
+            console.error('Error saving song:', error);
+            alert('Error saving song. Check console for details.');
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const handleEdit = (song: Song) => {
+        setTitle(song.title);
+        setArtist(song.artist || '');
+        setAlbum(song.album || '');
+        setGenre(song.genre || '');
+        setLanguage(song.language || '');
+        setStatus(song.status || 'draft');
+        setFeatured(song.featured || false);
+        setLyrics(song.lyrics || '');
+        setChords(song.chords || '');
+        setLyricsChordpro(song.lyrics_chordpro || '');
+        setCoverUrl(song.cover_url || null);
+        setCategoryId(song.category_id || '');
+        setDuration(song.duration ? String(song.duration) : '');
+        setLyricsApproved(song.lyrics_approved ?? true);
+        setChordsApproved(song.chords_approved ?? true);
+        setPendingLyrics(song.pending_lyrics || '');
+        setPendingChords(song.pending_chords || '');
+        setEditId(song.id);
+        setIsEditing(true);
+    };
+
+    const handleDelete = async (id: string) => {
+        if (!confirm('Are you sure you want to delete this song?')) return;
+        try {
+            const { error } = await supabase.from('songs').delete().eq('id', id);
+            if (error) throw error;
+            fetchSongs();
+            enqueueToast({ type: 'success', message: 'Song deleted' });
+        } catch (error) {
+            console.error('Error deleting song:', error);
+        }
+    };
+
+    // Helpers
+    const copyToClipboard = (text: string) => {
+        navigator.clipboard.writeText(text)
+            .then(() => enqueueToast({ type: 'success', message: 'Copied to clipboard' }))
+            .catch(() => enqueueToast({ type: 'error', message: 'Copy failed' }));
+    };
+
+    const autoResize = (el: HTMLTextAreaElement | null, minHeight = 80) => {
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = Math.max(minHeight, el.scrollHeight) + 'px';
+    };
+
+    // Drag-n-drop import for textareas
+    const handleLyricsDrop = (e: React.DragEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        const file = e.dataTransfer.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => setLyrics(String(reader.result ?? ''));
+        reader.readAsText(file);
+        enqueueToast({ type: 'success', message: 'Lyrics file imported' });
+    };
+    const handleChordsDrop = (e: React.DragEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        const file = e.dataTransfer.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => setChords(String(reader.result ?? ''));
+        reader.readAsText(file);
+        enqueueToast({ type: 'success', message: 'Chords file imported' });
+    };
+
+    // Cover drag & drop
+    const handleCoverDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        const file = e.dataTransfer.files?.[0];
+        if (!file) return;
+        const fileName = `${Date.now()}_${file.name}`;
+        const { data, error } = await supabase.storage.from('covers').upload(fileName, file, { upsert: false });
+        if (error) {
+            enqueueToast({ type: 'error', message: `Cover upload failed: ${error.message}` });
+            return;
+        }
+        const { data: pub } = supabase.storage.from('covers').getPublicUrl(data.path);
+        setCoverUrl(pub.publicUrl);
+        enqueueToast({ type: 'success', message: 'Cover uploaded' });
+    };
+
+    // Instant moderation updates
+    const applyModerationUpdate = async (updates: Record<string, any>) => {
+        if (!editId) return;
+        const { error } = await supabase.from('songs').update(updates).eq('id', editId);
+        if (error) {
+            enqueueToast({ type: 'error', message: error.message });
+            return false;
+        }
+        // Refresh local song list and preserve form state changes
+        fetchSongs();
+        return true;
+    };
+
+    const approvePendingLyrics = async () => {
+        if (!pendingLyrics) return;
+        const ok = await applyModerationUpdate({ lyrics: pendingLyrics, pending_lyrics: null, lyrics_approved: true });
+        if (ok) {
+            setLyrics(pendingLyrics);
+            setPendingLyrics('');
+            setLyricsApproved(true);
+            enqueueToast({ type: 'success', message: 'Lyrics approved' });
+        }
+    };
+
+    const rejectPendingLyrics = async () => {
+        const ok = await applyModerationUpdate({ pending_lyrics: null, lyrics_approved: false });
+        if (ok) {
+            setPendingLyrics('');
+            setLyricsApproved(false);
+            enqueueToast({ type: 'success', message: 'Lyrics rejected' });
+        }
+    };
+
+    const approvePendingChords = async () => {
+        if (!pendingChords) return;
+        const ok = await applyModerationUpdate({ chords: pendingChords, pending_chords: null, chords_approved: true });
+        if (ok) {
+            setChords(pendingChords);
+            setPendingChords('');
+            setChordsApproved(true);
+            enqueueToast({ type: 'success', message: 'Chords approved' });
+        }
+    };
+
+    const rejectPendingChords = async () => {
+        const ok = await applyModerationUpdate({ pending_chords: null, chords_approved: false });
+        if (ok) {
+            setPendingChords('');
+            setChordsApproved(false);
+            enqueueToast({ type: 'success', message: 'Chords rejected' });
+        }
+    };
+
+    // Category CRUD
+    const addCategory = async () => {
+        const name = newCategoryName.trim();
+        if (!name) return;
+        const { error } = await supabase.from('categories').insert([{ name }]);
+        if (error) { enqueueToast({ type: 'error', message: error.message }); return; }
+        setNewCategoryName('');
+        fetchCategories();
+        enqueueToast({ type: 'success', message: 'Category added' });
+    };
+    const renameCategory = async (id: string, name: string) => {
+        const { error } = await supabase.from('categories').update({ name }).eq('id', id);
+        if (error) { enqueueToast({ type: 'error', message: error.message }); return; }
+        fetchCategories();
+        enqueueToast({ type: 'success', message: 'Category renamed' });
+    };
+    const deleteCategory = async (id: string) => {
+        if (!confirm('Delete this category?')) return;
+        const { error } = await supabase.from('categories').delete().eq('id', id);
+        if (error) { enqueueToast({ type: 'error', message: error.message }); return; }
+        if (categoryId === id) setCategoryId('');
+        fetchCategories();
+        enqueueToast({ type: 'success', message: 'Category deleted' });
+    };
+
+    // Duplicate Song
+    const duplicateSong = async (song: Song) => {
+        const newTitle = `Copy of ${song.title}`;
+        const insertData: any = {
+            title: newTitle,
+            artist: song.artist,
+            album: song.album,
+            genre: song.genre,
+            language: song.language,
+            status: song.status ?? 'draft',
+            featured: false,
+            lyrics: song.lyrics,
+            chords: song.chords,
+            lyrics_chordpro: (song as any).lyrics_chordpro ?? null,
+            cover_url: (song as any).cover_url ?? null,
+            category_id: (song as any).category_id ?? null,
+            duration: (song as any).duration ?? null,
+            pending_lyrics: null,
+            pending_chords: null,
+            lyrics_approved: (song as any).lyrics_approved ?? true,
+            chords_approved: (song as any).chords_approved ?? true,
+        };
+        const { error } = await supabase.from('songs').insert([insertData]);
+        if (error) { enqueueToast({ type: 'error', message: error.message }); return; }
+        enqueueToast({ type: 'success', message: 'Song duplicated' });
+        fetchSongs();
+    };
+
+    const filteredSongs = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        return songs.filter(s => {
+            const matchesQuery = !q || s.title.toLowerCase().includes(q) || (s.artist ?? '').toLowerCase().includes(q) || (s.genre ?? '').toLowerCase().includes(q);
+            const matchesStatus = !statusFilter || (s.status ?? 'draft') === statusFilter;
+            return matchesQuery && matchesStatus;
+        });
+    }, [songs, query, statusFilter]);
+
+    const timeAgo = useCallback((iso: string) => {
+        const d = new Date(iso);
+        const diff = Date.now() - d.getTime();
+        const sec = Math.floor(diff / 1000);
+        if (sec < 60) return `${sec}s ago`;
+        const min = Math.floor(sec / 60);
+        if (min < 60) return `${min}m ago`;
+        const hr = Math.floor(min / 60);
+        if (hr < 24) return `${hr}h ago`;
+        const day = Math.floor(hr / 24);
+        if (day < 30) return `${day}d ago`;
+        const mo = Math.floor(day / 30);
+        if (mo < 12) return `${mo}mo ago`;
+        const yr = Math.floor(mo / 12);
+        return `${yr}y ago`;
+    }, []);
+
+    return (
+        <Layout>
+            <Head>
+                <title>Manage Lyrics</title>
+            </Head>
+
+            <div className="flex justify-between items-center mb-8 px-4">
+                <h2 className="text-2xl font-bold text-slate-800">Lyrics Library</h2>
+                <button
+                    onClick={() => {
+                        if (isEditing) {
+                            setIsEditing(false);
+                            resetForm();
+                        } else {
+                            setIsEditing(true);
+                            resetForm();
+                        }
+                    }}
+                    className={`px-4 py-2 text-sm font-medium text-white rounded-lg shadow-lg transition-all hover:-translate-y-0.5 flex items-center gap-2
+            ${isEditing ? 'bg-slate-500 hover:bg-slate-600 shadow-slate-500/30' : 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/30'}
+          `}
+                >
+                    {isEditing ? <><X size={16} /> Cancel</> : <><Plus size={16} /> Add Song</>}
+                </button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* Form Section - Expanded for more inputs */}
+                {isEditing && (
+                    <div className="lg:col-span-1">
+                        <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 shadow-inner max-h-[calc(100vh-200px)] overflow-y-auto">
+                            <h3 className="text-lg font-semibold text-slate-700 mb-4">
+                                {editId ? 'Edit Song' : 'Add New Song'}
+                            </h3>
+                            <form onSubmit={handleSubmit} className="space-y-4">
+
+                                {/* Tabs */}
+                                <div className="flex gap-2 mb-1">
+                                    {['details','content','moderation'].map((t) => (
+                                        <button
+                                            key={t}
+                                            type="button"
+                                            onClick={() => setActiveTab(t as any)}
+                                            className={`px-3 py-1.5 text-xs rounded-full border ${activeTab===t ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                                        >
+                                            {t[0].toUpperCase()+t.slice(1)}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                {/* Details Tab */}
+                                {activeTab === 'details' && (
+                                <>
+                                {/* Main Info */}
+                                <div>
+                                    <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Title *</label>
+                                    <input
+                                        type="text"
+                                        value={title}
+                                        onChange={(e) => setTitle(e.target.value)}
+                                        className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                        placeholder="Song Title"
+                                        required
+                                    />
+                                </div>
+
+                                {/* Cover Image */}
+                                <div>
+                                    <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Cover Image</label>
+                                    {coverUrl && (
+                                        <div className="mb-2">
+                                            <img src={coverUrl} alt="Cover" className="w-full h-32 object-cover rounded-lg border border-slate-200" />
+                                            <div className="mt-2 flex gap-2">
+                                                <button type="button" className="px-3 py-1.5 text-xs rounded border border-slate-200 text-slate-600 hover:bg-slate-100" onClick={() => setCoverUrl(null)}>Remove</button>
+                                                <a href={coverUrl} target="_blank" rel="noreferrer" className="px-3 py-1.5 text-xs rounded border border-slate-200 text-slate-600 hover:bg-slate-100">Open</a>
+                                            </div>
+                                        </div>
+                                    )}
+                                    <div
+                                        onDragOver={(e) => e.preventDefault()}
+                                        onDrop={handleCoverDrop}
+                                        className="mb-2 border border-dashed border-slate-300 rounded-lg p-3 text-center text-xs text-slate-500 hover:bg-slate-50"
+                                    >
+                                        Drag & drop an image here to upload
+                                    </div>
+                                    <input
+                                        type="file"
+                                        accept="image/*"
+                                        onChange={async (e: ChangeEvent<HTMLInputElement>) => {
+                                            const file = e.target.files?.[0];
+                                            if (!file) return;
+                                            const fileName = `${Date.now()}_${file.name}`;
+                                            const { data, error } = await supabase.storage.from('covers').upload(fileName, file, { upsert: false });
+                                            if (error) {
+                                                alert(`Cover upload failed: ${error.message}`);
+                                                return;
+                                            }
+                                            const { data: pub } = supabase.storage.from('covers').getPublicUrl(data.path);
+                                            setCoverUrl(pub.publicUrl);
+                                            enqueueToast({ type: 'success', message: 'Cover uploaded' });
+                                        }}
+                                        className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                    />
+                                    <div className="mt-2">
+                                        <input
+                                            type="url"
+                                            placeholder="Or paste an image URL..."
+                                            value={coverUrl ?? ''}
+                                            onChange={(e) => setCoverUrl(e.target.value || null)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Artist</label>
+                                        <input
+                                            type="text"
+                                            value={artist}
+                                            onChange={(e) => setArtist(e.target.value)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                            placeholder="Artist Name"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Album</label>
+                                        <input
+                                            type="text"
+                                            value={album}
+                                            onChange={(e) => setAlbum(e.target.value)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                            placeholder="Album Name"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Genre</label>
+                                        <input
+                                            type="text"
+                                            value={genre}
+                                            onChange={(e) => setGenre(e.target.value)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                            placeholder="Pop, Rock..."
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Language</label>
+                                        <select
+                                            value={language}
+                                            onChange={(e) => setLanguage(e.target.value)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                        >
+                                            <option value="">Select language</option>
+                                            <option value="English">English</option>
+                                            <option value="Malayalam">Malayalam</option>
+                                            <option value="Manglish">Manglish</option>
+                                            <option value="Other">Other</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Category</label>
+                                        <select
+                                            value={categoryId}
+                                            onChange={(e) => setCategoryId(e.target.value)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                        >
+                                            <option value="">No category</option>
+                                            {categories.map(c => (
+                                                <option key={c.id} value={c.id}>{c.name}</option>
+                                            ))}
+                                        </select>
+                                        <button type="button" onClick={() => setShowCatMgr(!showCatMgr)} className="mt-2 text-[11px] text-blue-600 hover:underline">{showCatMgr ? 'Hide' : 'Manage'} categories</button>
+                                        {showCatMgr && (
+                                            <div className="mt-2 rounded-lg border border-slate-200 p-2 max-h-48 overflow-auto">
+                                                <div className="flex gap-2 mb-2">
+                                                    <input value={newCategoryName} onChange={(e)=>setNewCategoryName(e.target.value)} placeholder="New category name" className="flex-1 px-2 py-1 border rounded" />
+                                                    <button type="button" className="px-2 py-1 text-xs rounded bg-blue-600 text-white" onClick={addCategory}>Add</button>
+                                                </div>
+                                                <ul className="space-y-1">
+                                                    {categories.map(c => (
+                                                        <li key={c.id} className="flex items-center gap-2 text-xs">
+                                                            <input defaultValue={c.name} className="flex-1 px-2 py-1 border rounded" onBlur={(e)=>{ const v=e.target.value.trim(); if(v && v!==c.name) renameCategory(c.id, v); }} />
+                                                            <button type="button" className="px-2 py-1 rounded bg-red-50 text-red-600 border border-red-200" onClick={() => deleteCategory(c.id)}>Delete</button>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Duration (sec)</label>
+                                        <input
+                                            type="number"
+                                            inputMode="numeric"
+                                            value={duration}
+                                            onChange={(e) => setDuration(e.target.value)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                            placeholder="e.g. 210"
+                                            min={0}
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4 items-center">
+                                    <div>
+                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Status</label>
+                                        <select
+                                            value={status}
+                                            onChange={(e) => setStatus(e.target.value)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                        >
+                                            <option value="draft">Draft</option>
+                                            <option value="published">Published</option>
+                                            <option value="archived">Archived</option>
+                                        </select>
+                                    </div>
+                                    <div className="flex items-center gap-2 mt-5">
+                                        <input
+                                            type="checkbox"
+                                            id="featured"
+                                            checked={featured}
+                                            onChange={(e) => setFeatured(e.target.checked)}
+                                            className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 border-gray-300"
+                                        />
+                                        <label htmlFor="featured" className="text-sm font-medium text-slate-700">Featured Song</label>
+                                    </div>
+                                </div>
+                                </>
+                                )}
+
+                                {/* Content Tab */}
+                                {activeTab === 'content' && (
+                                <>
+                                    <div onDragOver={(e)=>e.preventDefault()} onDrop={handleLyricsDrop}>
+                                        <div className="flex items-center justify-between">
+                                            <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Lyrics</label>
+                                            <div className="flex items-center gap-2">
+                                                <button type="button" className="text-[11px] px-2 py-1 border rounded text-slate-600 border-slate-200 hover:bg-slate-50" onClick={() => copyToClipboard(lyrics)}>Copy</button>
+                                                <label className="text-[11px] px-2 py-1 border rounded cursor-pointer text-slate-600 border-slate-200 hover:bg-slate-50">
+                                                Import .txt
+                                                <input type="file" accept=".txt,text/plain" className="hidden" onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                                    const file = e.target.files?.[0];
+                                                    if (!file) return;
+                                                    const reader = new FileReader();
+                                                    reader.onload = () => setLyrics(String(reader.result ?? ''));
+                                                    reader.readAsText(file);
+                                                }} />
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <textarea
+                                            value={lyrics}
+                                            onChange={(e) => { setLyrics(e.target.value); autoResize(e.target); }}
+                                            ref={(el) => autoResize(el)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all h-40 resize-none font-mono text-sm"
+                                            placeholder="Enter lyrics..."
+                                        />
+                                    </div>
+
+                                    <div onDragOver={(e)=>e.preventDefault()} onDrop={handleChordsDrop}>
+                                        <div className="flex items-center justify-between">
+                                            <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Chords</label>
+                                            <div className="flex items-center gap-2">
+                                                <button type="button" className="text-[11px] px-2 py-1 border rounded text-slate-600 border-slate-200 hover:bg-slate-50" onClick={() => copyToClipboard(chords)}>Copy</button>
+                                                <label className="text-[11px] px-2 py-1 border rounded cursor-pointer text-slate-600 border-slate-200 hover:bg-slate-50">
+                                                Import .txt
+                                                <input type="file" accept=".txt,text/plain" className="hidden" onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                                                    const file = e.target.files?.[0];
+                                                    if (!file) return;
+                                                    const reader = new FileReader();
+                                                    reader.onload = () => setChords(String(reader.result ?? ''));
+                                                    reader.readAsText(file);
+                                                }} />
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <textarea
+                                            value={chords}
+                                            onChange={(e) => { setChords(e.target.value); autoResize(e.target); }}
+                                            ref={(el) => autoResize(el, 64)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all h-32 resize-none font-mono text-sm"
+                                            placeholder="Enter chords..."
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <div className="flex items-center justify-between">
+                                            <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Lyrics (ChordPro)</label>
+                                            <button type="button" className="text-[11px] px-2 py-1 border rounded text-slate-600 border-slate-200 hover:bg-slate-50" onClick={() => copyToClipboard(lyricsChordpro)}>Copy</button>
+                                        </div>
+                                        <textarea
+                                            value={lyricsChordpro}
+                                            onChange={(e) => { setLyricsChordpro(e.target.value); autoResize(e.target); }}
+                                            ref={(el) => autoResize(el, 64)}
+                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all h-32 resize-none font-mono text-sm"
+                                            placeholder="[C] Hello [G] world..."
+                                        />
+                                        <p className="text-[11px] text-slate-500 mt-1">Optional. Supports ChordPro format. If provided, the app can render chords inline.</p>
+                                    </div>
+                                </>
+                                )}
+
+                                {/* Moderation Tab */}
+                                {activeTab === 'moderation' && (
+                                <>
+                                    {/* Approvals */}
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="checkbox"
+                                                id="lyricsApproved"
+                                                checked={lyricsApproved}
+                                                onChange={(e) => setLyricsApproved(e.target.checked)}
+                                                className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 border-gray-300"
+                                            />
+                                            <label htmlFor="lyricsApproved" className="text-sm font-medium text-slate-700">Lyrics Approved</label>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="checkbox"
+                                                id="chordsApproved"
+                                                checked={chordsApproved}
+                                                onChange={(e) => setChordsApproved(e.target.checked)}
+                                                className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 border-gray-300"
+                                            />
+                                            <label htmlFor="chordsApproved" className="text-sm font-medium text-slate-700">Chords Approved</label>
+                                        </div>
+                                    </div>
+
+                                    {/* Pending moderation helpers */}
+                                    {(pendingLyrics || pendingChords) && (
+                                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                                            <p className="text-xs font-semibold text-amber-700 mb-2">Pending Submissions</p>
+                                            {pendingLyrics && (
+                                                <div className="mb-3">
+                                                    <label className="block text-[11px] text-amber-700 mb-1">Pending Lyrics</label>
+                                                    <textarea
+                                                        readOnly
+                                                        value={pendingLyrics}
+                                                        className="w-full px-3 py-2 bg-white border border-amber-200 rounded-lg h-24 text-xs"
+                                                    />
+                                                    <div className="flex gap-2 mt-2">
+                                                        <button type="button" className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white"
+                                                            onClick={approvePendingLyrics}>
+                                                            Approve → Move to Lyrics
+                                                        </button>
+                                                        <button type="button" className="px-3 py-1.5 text-xs rounded bg-red-600 text-white"
+                                                            onClick={rejectPendingLyrics}>
+                                                            Reject
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {pendingChords && (
+                                                <div>
+                                                    <label className="block text-[11px] text-amber-700 mb-1">Pending Chords</label>
+                                                    <textarea
+                                                        readOnly
+                                                        value={pendingChords}
+                                                        className="w-full px-3 py-2 bg-white border border-amber-200 rounded-lg h-24 text-xs"
+                                                    />
+                                                    <div className="flex gap-2 mt-2">
+                                                        <button type="button" className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white"
+                                                            onClick={approvePendingChords}>
+                                                            Approve → Move to Chords
+                                                        </button>
+                                                        <button type="button" className="px-3 py-1.5 text-xs rounded bg-red-600 text-white"
+                                                            onClick={rejectPendingChords}>
+                                                            Reject
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </>
+                                )}
+
+                                <button
+                                    type="submit"
+                                    id="save-song-btn"
+                                    disabled={isSaving}
+                                    className={`w-full py-3 ${isSaving ? 'bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'} text-white font-medium rounded-xl shadow-lg shadow-blue-600/20 transition-all flex items-center justify-center gap-2`}
+                                >
+                                    <Save size={18} />
+                                    {isSaving ? 'Saving...' : (editId ? 'Update Song' : 'Save Song')}
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* List Section */}
+                <div className={`${isEditing ? 'lg:col-span-2' : 'lg:col-span-3'} transition-all duration-300`}>
+                    {/* Toolbar */}
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4 px-1">
+                        <div className="flex-1">
+                            <input
+                                type="text"
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                placeholder="Search by title, artist, genre..."
+                                className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                            />
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <select
+                                value={statusFilter}
+                                onChange={(e) => setStatusFilter(e.target.value)}
+                                className="px-3 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                            >
+                                <option value="">All statuses</option>
+                                <option value="draft">Draft</option>
+                                <option value="published">Published</option>
+                                <option value="archived">Archived</option>
+                            </select>
+                        </div>
+                    </div>
+                    {loading ? (
+                        <div className="flex items-center justify-center h-64">
+                            <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                            {filteredSongs.map((song) => (
+                                <div
+                                    key={song.id}
+                                    className="group bg-white border border-slate-100 rounded-2xl p-5 hover:shadow-xl hover:shadow-blue-600/5 hover:border-blue-100 transition-all duration-300 relative overflow-hidden"
+                                >
+                                    <div className="absolute top-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2 bg-gradient-to-l from-white via-white to-transparent pl-8">
+                                        <button
+                                            onClick={() => handleEdit(song)}
+                                            className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                        >
+                                            <Edit2 size={16} />
+                                        </button>
+                                        <button
+                                            onClick={() => duplicateSong(song)}
+                                            className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                                            title="Duplicate"
+                                        >
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4"><path d="M7 7a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V7z"/><path d="M5 9v8a2 2 0 0 0 2 2h8" fill="none" stroke="currentColor" strokeWidth="1.5"/></svg>
+                                        </button>
+                                        <button
+                                            onClick={() => handleDelete(song.id)}
+                                            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                    </div>
+
+                                    <div className="flex items-start gap-4 mb-4">
+                                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center shrink-0">
+                                            <Music size={24} />
+                                        </div>
+                                        <div>
+                                            <h4 className="font-bold text-slate-800 line-clamp-1">{song.title}</h4>
+                                            <p className="text-sm text-slate-500">{song.artist || 'Unknown Artist'}</p>
+                                            <div className="flex flex-wrap gap-2 mt-1 items-center">
+                                                {song.genre && <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">{song.genre}</span>}
+                                                {song.status === 'published' && <span className="text-[10px] px-2 py-0.5 bg-green-100 text-green-600 rounded-full">Published</span>}
+                                                {song.pending_lyrics && <span className="text-[10px] px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">Pending Lyrics</span>}
+                                                {song.pending_chords && <span className="text-[10px] px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">Pending Chords</span>}
+                                                {song.lyrics_approved === false && <span className="text-[10px] px-2 py-0.5 bg-red-100 text-red-600 rounded-full">Lyrics Unapproved</span>}
+                                                {song.chords_approved === false && <span className="text-[10px] px-2 py-0.5 bg-red-100 text-red-600 rounded-full">Chords Unapproved</span>}
+                                                <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">{timeAgo(song.created_at)}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-slate-50 rounded-xl p-3 h-32 overflow-hidden relative">
+                                        <p className="text-xs text-slate-600 whitespace-pre-wrap font-medium leading-relaxed font-mono">
+                                            {song.lyrics || song.chords || 'No content available...'}
+                                        </p>
+                                        <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-slate-50 to-transparent"></div>
+                                    </div>
+                                </div>
+                            ))}
+
+                            {filteredSongs.length === 0 && !loading && (
+                                <div className="col-span-full flex flex-col items-center justify-center py-20 text-slate-400 bg-slate-50/50 rounded-3xl border border-dashed border-slate-200">
+                                    <Music size={48} className="mb-4 opacity-20" />
+                                    <p>No songs found. Try adjusting your search/filters or add a new song.</p>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </div>
+            {/* Toast queue */}
+            <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
+                {toasts.map(t => (
+                    <div key={t.id} className={`px-4 py-2 rounded-lg shadow text-sm animate-[fadeIn_.2s_ease-out] ${t.type==='success' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'}`}>
+                        {t.message}
+                    </div>
+                ))}
+            </div>
+        </Layout>
+    );
+}
