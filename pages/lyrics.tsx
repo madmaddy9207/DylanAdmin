@@ -189,18 +189,23 @@ export default function LyricsPage() {
             };
 
             if (editId) {
-                // Update
-                const { error } = await supabase
-                    .from('songs')
-                    .update(songData)
-                    .eq('id', editId);
-                if (error) throw error;
+                // Update via server API (service role)
+                const resp = await fetch('/api/songs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'update', id: editId, data: songData })
+                });
+                const json = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(json?.error || 'Update failed');
             } else {
-                // Create
-                const { error } = await supabase
-                    .from('songs')
-                    .insert([songData]);
-                if (error) throw error;
+                // Create via server API (service role)
+                const resp = await fetch('/api/songs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'insert', data: songData })
+                });
+                const json = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(json?.error || 'Insert failed');
             }
 
             // Reset and refresh
@@ -241,8 +246,13 @@ export default function LyricsPage() {
     const handleDelete = async (id: string) => {
         if (!confirm('Are you sure you want to delete this song?')) return;
         try {
-            const { error } = await supabase.from('songs').delete().eq('id', id);
-            if (error) throw error;
+            const resp = await fetch('/api/songs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'delete', id })
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(json?.error || 'Delete failed');
             fetchSongs();
             enqueueToast({ type: 'success', message: 'Song deleted' });
         } catch (error) {
@@ -302,9 +312,14 @@ export default function LyricsPage() {
     // Instant moderation updates
     const applyModerationUpdate = async (updates: Record<string, any>) => {
         if (!editId) return;
-        const { error } = await supabase.from('songs').update(updates).eq('id', editId);
-        if (error) {
-            enqueueToast({ type: 'error', message: error.message });
+        const resp = await fetch('/api/songs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'moderation', id: editId, data: updates })
+        });
+        if (!resp.ok) {
+            const json = await resp.json().catch(() => ({}));
+            enqueueToast({ type: 'error', message: json?.error || 'Update failed' });
             return false;
         }
         // Refresh local song list and preserve form state changes
