@@ -571,7 +571,7 @@ export default function LyricsPage() {
                         <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Lyrics Library</h2>
                         <p className="text-slate-500 mt-1">Manage, edit, and curate your song collection</p>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3 w-full md:w-auto">
                         {/* Hidden file input for mass JSON */}
                         <input
                             id="mass-json-input"
@@ -587,7 +587,7 @@ export default function LyricsPage() {
                         <button
                             type="button"
                             onClick={() => { (document.getElementById('mass-json-input') as HTMLInputElement)?.click(); }}
-                            className="px-5 py-2.5 text-sm font-semibold text-slate-700 bg-white rounded-xl border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm"
+                            className="w-full md:w-auto px-5 py-2.5 text-sm font-semibold text-slate-700 bg-white rounded-xl border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm"
                         >
                             Import JSON
                         </button>
@@ -596,7 +596,7 @@ export default function LyricsPage() {
                                 setIsEditing(true);
                                 resetForm();
                             }}
-                            className="px-5 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-lg shadow-blue-600/20 hover:shadow-blue-600/30 transition-all hover:-translate-y-0.5 flex items-center gap-2"
+                            className="w-full md:w-auto px-5 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-lg shadow-blue-600/20 hover:shadow-blue-600/30 transition-all hover:-translate-y-0.5 flex items-center justify-center gap-2"
                         >
                             <Plus size={18} /> Add Song
                         </button>
@@ -610,7 +610,7 @@ export default function LyricsPage() {
                             {/* Overlay click to close */}
                             <div className="absolute inset-0" onClick={() => setIsEditing(false)}></div>
 
-                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col relative animate-in slide-in-from-bottom-4 zoom-in-95 duration-200 z-10 border border-slate-100">
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] h-full md:h-auto flex flex-col relative animate-in slide-in-from-bottom-4 zoom-in-95 duration-200 z-10 border border-slate-100">
                                 <button
                                     onClick={() => setIsEditing(false)}
                                     className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all z-20"
@@ -709,7 +709,7 @@ export default function LyricsPage() {
                                                     </div>
                                                 </div>
 
-                                                <div className="grid grid-cols-2 gap-4">
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                     <div>
                                                         <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Artist</label>
                                                         <input
@@ -732,7 +732,7 @@ export default function LyricsPage() {
                                                     </div>
                                                 </div>
 
-                                                <div className="grid grid-cols-2 gap-4">
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                     <div>
                                                         <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Genre</label>
                                                         <input
@@ -759,7 +759,7 @@ export default function LyricsPage() {
                                                     </div>
                                                 </div>
 
-                                                <div className="grid grid-cols-2 gap-4">
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                     <div>
                                                         <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Category</label>
                                                         <select
@@ -910,13 +910,13 @@ export default function LyricsPage() {
                     <div className="col-span-1 transition-all duration-500">
                         {/* Toolbar */}
                         {selectedIds.length > 0 ? (
-                            <div className="bg-blue-600 text-white p-3 rounded-2xl shadow-lg mb-6 flex items-center justify-between animate-in fade-in slide-in-from-top-2">
-                                <div className="flex items-center gap-4 px-2">
+                            <div className="bg-blue-600 text-white p-3 rounded-2xl shadow-lg mb-6 flex flex-col sm:flex-row items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2">
+                                <div className="flex items-center gap-4 px-2 w-full sm:w-auto justify-between sm:justify-start">
                                     <div className="flex items-center gap-2">
                                         <button onClick={clearSelection} className="p-1 hover:bg-blue-500 rounded-full transition-colors"><X size={18} /></button>
                                         <span className="font-bold text-sm">{selectedIds.length} Selected</span>
                                     </div>
-                                    <div className="h-6 w-px bg-blue-500"></div>
+                                    <div className="h-6 w-px bg-blue-500 hidden sm:block"></div>
                                     <button onClick={selectAllVisible} className="text-xs font-semibold hover:text-blue-100 transition-colors">Select All</button>
                                 </div>
                                 <div className="flex items-center gap-2">

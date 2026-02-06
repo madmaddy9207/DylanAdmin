@@ -22,7 +22,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     return (
         <div className="flex h-screen bg-blue-50/50 font-sans text-slate-600">
             {/* Sidebar */}
-            <aside className="w-20 lg:w-64 bg-blue-600 text-white flex flex-col transition-all duration-300 ease-in-out m-4 rounded-3xl shadow-2xl shadow-blue-600/20">
+            <aside className="w-[70px] lg:w-64 bg-blue-600 text-white flex flex-col transition-all duration-300 ease-in-out m-2 lg:m-4 rounded-3xl shadow-2xl shadow-blue-600/20">
                 <div className="p-6 flex items-center justify-center lg:justify-start gap-4">
                     <div className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center backdrop-blur-sm">
                         <div className="w-4 h-4 bg-white rounded-full"></div>
@@ -62,9 +62,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </aside>
 
             {/* Main Content */}
-            <main className="flex-1 flex flex-col overflow-hidden py-4 pr-4">
+            <main className="flex-1 flex flex-col overflow-hidden py-2 lg:py-4 pr-2 lg:pr-4">
                 {/* Header */}
-                <header className="h-20 flex items-center justify-between px-8 bg-white rounded-t-3xl mx-4 mt-4 shadow-sm z-10">
+                <header className="h-16 lg:h-20 flex items-center justify-between px-4 lg:px-8 bg-white rounded-t-3xl mx-2 lg:mx-4 mt-2 lg:mt-4 shadow-sm z-10">
                     <div className="flex items-center gap-4 w-1/3">
                         <div className="relative w-full max-w-md">
                             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
@@ -92,7 +92,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </header>
 
                 {/* Content Body */}
-                <div className="flex-1 bg-white mx-4 mb-4 rounded-b-3xl shadow-sm p-8 overflow-y-auto relative">
+                <div className="flex-1 bg-white mx-2 lg:mx-4 mb-2 lg:mb-4 rounded-b-3xl shadow-sm p-4 lg:p-8 overflow-y-auto relative">
                     {children}
                 </div>
             </main>
