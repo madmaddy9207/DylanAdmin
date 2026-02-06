@@ -1,4 +1,4 @@
-import React, { useState, useEffect, ChangeEvent, useMemo, useCallback } from 'react';
+﻿import React, { useState, useEffect, ChangeEvent, useMemo, useCallback } from 'react';
 import Head from 'next/head';
 import {
     Plus,
@@ -8,7 +8,8 @@ import {
     Edit2,
     Loader2,
     X,
-    Copy as CopyIcon
+    Copy as CopyIcon,
+    Search
 } from 'lucide-react';
 import { supabase } from '../src/lib/supabaseClient';
 import Layout from '../components/Layout';
@@ -66,13 +67,15 @@ export default function LyricsPage() {
     const [activeTab, setActiveTab] = useState<'details' | 'content' | 'moderation'>('details');
     const [query, setQuery] = useState('');
     const [statusFilter, setStatusFilter] = useState<string>('');
-    type Toast = { id: string; type: 'success'|'error'; message: string };
+    type Toast = { id: string; type: 'success' | 'error'; message: string };
     const [toasts, setToasts] = useState<Toast[]>([]);
     const [showCatMgr, setShowCatMgr] = useState(false);
     const [newCategoryName, setNewCategoryName] = useState('');
 
+    const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
     // Toast queue helper
-    const enqueueToast = (t: Omit<Toast,'id'>) => {
+    const enqueueToast = (t: Omit<Toast, 'id'>) => {
         const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
         const toast = { id, ...t } as Toast;
         setToasts((prev) => [...prev, toast]);
@@ -298,10 +301,10 @@ export default function LyricsPage() {
         e.preventDefault();
         const file = e.dataTransfer.files?.[0];
         if (!file) return;
-        const fileName = `${Date.now()}_${file.name}`;
+        const fileName = `${Date.now()}_${file.name} `;
         const { data, error } = await supabase.storage.from('covers').upload(fileName, file, { upsert: false });
         if (error) {
-            enqueueToast({ type: 'error', message: `Cover upload failed: ${error.message}` });
+            enqueueToast({ type: 'error', message: `Cover upload failed: ${error.message} ` });
             return;
         }
         const { data: pub } = supabase.storage.from('covers').getPublicUrl(data.path);
@@ -394,30 +397,139 @@ export default function LyricsPage() {
 
     // Duplicate Song
     const duplicateSong = async (song: Song) => {
-        const newTitle = `Copy of ${song.title}`;
-        const insertData: any = {
-            title: newTitle,
-            artist: song.artist,
-            album: song.album,
-            genre: song.genre,
-            language: song.language,
-            status: song.status ?? 'draft',
-            featured: false,
-            lyrics: song.lyrics,
-            chords: song.chords,
-            lyrics_chordpro: (song as any).lyrics_chordpro ?? null,
-            cover_url: (song as any).cover_url ?? null,
-            category_id: (song as any).category_id ?? null,
-            duration: (song as any).duration ?? null,
-            pending_lyrics: null,
-            pending_chords: null,
-            lyrics_approved: (song as any).lyrics_approved ?? true,
-            chords_approved: (song as any).chords_approved ?? true,
-        };
-        const { error } = await supabase.from('songs').insert([insertData]);
-        if (error) { enqueueToast({ type: 'error', message: error.message }); return; }
-        enqueueToast({ type: 'success', message: 'Song duplicated' });
-        fetchSongs();
+        try {
+            const newTitle = `Copy of ${song.title} `;
+            const insertData: any = {
+                title: newTitle,
+                artist: song.artist,
+                album: song.album,
+                genre: song.genre,
+                language: song.language,
+                status: 'draft',
+                featured: false,
+                lyrics: song.lyrics,
+                chords: song.chords,
+                lyrics_chordpro: song.lyrics_chordpro ?? null,
+                cover_url: song.cover_url ?? null,
+                category_id: song.category_id ?? null,
+                duration: song.duration ?? null,
+                pending_lyrics: null,
+                pending_chords: null,
+                lyrics_approved: true,
+                chords_approved: true,
+            };
+
+            const resp = await fetch('/api/songs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'insert', data: insertData })
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(json?.error || 'Duplicate failed');
+            enqueueToast({ type: 'success', message: 'Song duplicated' });
+            fetchSongs();
+        } catch (e: any) {
+            enqueueToast({ type: 'error', message: String(e?.message ?? e) });
+        }
+    };
+    // Bulk import from JSON file
+    const handleMassJsonImport = async (file: File | null) => {
+        if (!file) return;
+        try {
+            const text = await file.text();
+            const parsed = JSON.parse(text);
+            const items: any[] = Array.isArray(parsed) ? parsed : Array.isArray((parsed as any)?.songs) ? (parsed as any).songs : [];
+            if (!items.length) { enqueueToast({ type: 'error', message: 'No songs found in JSON' }); return; }
+            const resp = await fetch('/api/songs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'bulk_insert', data: items })
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok && resp.status !== 207) throw new Error(json?.error || 'Bulk insert failed');
+            const inserted = json?.inserted ?? 0;
+            const errors = json?.errors ?? [];
+            const skipped = json?.skipped ?? [];
+            if (errors.length > 0) {
+                const preview = errors.slice(0, 3).map((e: any) => `#${e.index}: ${e.error} `).join(' | ');
+                enqueueToast({ type: 'error', message: `Imported ${inserted} with ${errors.length} error(s): ${preview} and skipped ${skipped.length} ` });
+            } else if (skipped.length > 0) {
+                enqueueToast({ type: 'success', message: `Imported ${inserted} song(s), skipped ${skipped.length} duplicate(s)` });
+            } else {
+                enqueueToast({ type: 'success', message: `Imported ${inserted} song(s)` });
+            }
+            fetchSongs();
+        } catch (e: any) {
+            console.error('Mass JSON import error:', e);
+            enqueueToast({ type: 'error', message: String(e?.message ?? e) });
+        }
+    };
+
+    // Bulk import from JSON file
+    // Download JSON template
+    const downloadTemplate = () => {
+        const template = [
+            {
+                title: 'Song Title',
+                artist: 'Artist Name',
+                album: 'Album',
+                genre: 'Pop',
+                language: 'English',
+                status: 'draft',
+                featured: false,
+                lyrics: 'Lyrics text...',
+                chords: 'Chords text...',
+                lyrics_chordpro: null,
+                cover_url: null,
+                category_id: null,
+                duration: 210,
+                pending_lyrics: null,
+                pending_chords: null,
+                lyrics_approved: true,
+                chords_approved: true
+            }
+        ];
+        const blob = new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'songs_template.json';
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const toggleSelect = (id: string, checked: boolean) => {
+        setSelectedIds(prev => {
+            const s = new Set(prev);
+            if (checked) s.add(id);
+            else s.delete(id);
+            return Array.from(s);
+        });
+    };
+
+    const selectAllVisible = () => {
+        setSelectedIds(filteredSongs.map(s => s.id));
+    };
+
+    const clearSelection = () => setSelectedIds([]);
+
+    const bulkDeleteSelected = async () => {
+        if (selectedIds.length === 0) return;
+        if (!confirm(`Delete ${selectedIds.length} selected song(s) ? `)) return;
+        try {
+            const resp = await fetch('/api/songs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'bulk_delete', data: selectedIds })
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(json?.error || 'Bulk delete failed');
+            enqueueToast({ type: 'success', message: `Deleted ${selectedIds.length} song(s)` });
+            setSelectedIds([]);
+            fetchSongs();
+        } catch (e: any) {
+            enqueueToast({ type: 'error', message: String(e?.message ?? e) });
+        }
     };
 
     const filteredSongs = useMemo(() => {
@@ -452,503 +564,506 @@ export default function LyricsPage() {
                 <title>Manage Lyrics</title>
             </Head>
 
-            <div className="flex justify-between items-center mb-8 px-4">
-                <h2 className="text-2xl font-bold text-slate-800">Lyrics Library</h2>
-                <button
-                    onClick={() => {
-                        if (isEditing) {
-                            setIsEditing(false);
-                            resetForm();
-                        } else {
-                            setIsEditing(true);
-                            resetForm();
-                        }
-                    }}
-                    className={`px-4 py-2 text-sm font-medium text-white rounded-lg shadow-lg transition-all hover:-translate-y-0.5 flex items-center gap-2
-            ${isEditing ? 'bg-slate-500 hover:bg-slate-600 shadow-slate-500/30' : 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/30'}
-          `}
-                >
-                    {isEditing ? <><X size={16} /> Cancel</> : <><Plus size={16} /> Add Song</>}
-                </button>
-            </div>
+            <div className="flex flex-col gap-8">
+                {/* Page Header */}
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div>
+                        <h2 className="text-3xl font-bold text-slate-900 tracking-tight">Lyrics Library</h2>
+                        <p className="text-slate-500 mt-1">Manage, edit, and curate your song collection</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        {/* Hidden file input for mass JSON */}
+                        <input
+                            id="mass-json-input"
+                            type="file"
+                            accept="application/json"
+                            className="hidden"
+                            onChange={(e) => {
+                                const file = e.target.files?.[0] ?? null;
+                                e.currentTarget.value = '';
+                                handleMassJsonImport(file);
+                            }}
+                        />
+                        <button
+                            type="button"
+                            onClick={() => { (document.getElementById('mass-json-input') as HTMLInputElement)?.click(); }}
+                            className="px-5 py-2.5 text-sm font-semibold text-slate-700 bg-white rounded-xl border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm"
+                        >
+                            Import JSON
+                        </button>
+                        <button
+                            onClick={() => {
+                                setIsEditing(true);
+                                resetForm();
+                            }}
+                            className="px-5 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-lg shadow-blue-600/20 hover:shadow-blue-600/30 transition-all hover:-translate-y-0.5 flex items-center gap-2"
+                        >
+                            <Plus size={18} /> Add Song
+                        </button>
+                    </div>
+                </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                {/* Form Section - Expanded for more inputs */}
-                {isEditing && (
-                    <div className="lg:col-span-1">
-                        <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 shadow-inner max-h-[calc(100vh-200px)] overflow-y-auto">
-                            <h3 className="text-lg font-semibold text-slate-700 mb-4">
-                                {editId ? 'Edit Song' : 'Add New Song'}
-                            </h3>
-                            <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="grid grid-cols-1 gap-8 items-start">
+                    {/* Form Section - Modal Mode */}
+                    {isEditing && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+                            {/* Overlay click to close */}
+                            <div className="absolute inset-0" onClick={() => setIsEditing(false)}></div>
 
-                                {/* Tabs */}
-                                <div className="flex gap-2 mb-1">
-                                    {['details','content','moderation'].map((t) => (
-                                        <button
-                                            key={t}
-                                            type="button"
-                                            onClick={() => setActiveTab(t as any)}
-                                            className={`px-3 py-1.5 text-xs rounded-full border ${activeTab===t ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
-                                        >
-                                            {t[0].toUpperCase()+t.slice(1)}
-                                        </button>
-                                    ))}
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col relative animate-in slide-in-from-bottom-4 zoom-in-95 duration-200 z-10 border border-slate-100">
+                                <button
+                                    onClick={() => setIsEditing(false)}
+                                    className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-all z-20"
+                                >
+                                    <X size={20} />
+                                </button>
+
+                                <div className="p-6 border-b border-slate-50 shrink-0">
+                                    <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                                        {editId ? <Edit2 size={20} className="text-blue-500" /> : <Plus size={20} className="text-blue-500" />}
+                                        {editId ? 'Edit Song' : 'New Song'}
+                                    </h3>
+                                    <p className="text-sm text-slate-500 mt-1">Fill in the details below to {editId ? 'update' : 'create'} a song.</p>
                                 </div>
-
-                                {/* Details Tab */}
-                                {activeTab === 'details' && (
-                                <>
-                                {/* Main Info */}
-                                <div>
-                                    <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Title *</label>
-                                    <input
-                                        type="text"
-                                        value={title}
-                                        onChange={(e) => setTitle(e.target.value)}
-                                        className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                                        placeholder="Song Title"
-                                        required
-                                    />
-                                </div>
-
-                                {/* Cover Image */}
-                                <div>
-                                    <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Cover Image</label>
-                                    {coverUrl && (
-                                        <div className="mb-2">
-                                            <img src={coverUrl} alt="Cover" className="w-full h-32 object-cover rounded-lg border border-slate-200" />
-                                            <div className="mt-2 flex gap-2">
-                                                <button type="button" className="px-3 py-1.5 text-xs rounded border border-slate-200 text-slate-600 hover:bg-slate-100" onClick={() => setCoverUrl(null)}>Remove</button>
-                                                <a href={coverUrl} target="_blank" rel="noreferrer" className="px-3 py-1.5 text-xs rounded border border-slate-200 text-slate-600 hover:bg-slate-100">Open</a>
-                                            </div>
-                                        </div>
-                                    )}
-                                    <div
-                                        onDragOver={(e) => e.preventDefault()}
-                                        onDrop={handleCoverDrop}
-                                        className="mb-2 border border-dashed border-slate-300 rounded-lg p-3 text-center text-xs text-slate-500 hover:bg-slate-50"
-                                    >
-                                        Drag & drop an image here to upload
-                                    </div>
-                                    <input
-                                        type="file"
-                                        accept="image/*"
-                                        onChange={async (e: ChangeEvent<HTMLInputElement>) => {
-                                            const file = e.target.files?.[0];
-                                            if (!file) return;
-                                            const fileName = `${Date.now()}_${file.name}`;
-                                            const { data, error } = await supabase.storage.from('covers').upload(fileName, file, { upsert: false });
-                                            if (error) {
-                                                alert(`Cover upload failed: ${error.message}`);
-                                                return;
-                                            }
-                                            const { data: pub } = supabase.storage.from('covers').getPublicUrl(data.path);
-                                            setCoverUrl(pub.publicUrl);
-                                            enqueueToast({ type: 'success', message: 'Cover uploaded' });
-                                        }}
-                                        className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                                    />
-                                    <div className="mt-2">
-                                        <input
-                                            type="url"
-                                            placeholder="Or paste an image URL..."
-                                            value={coverUrl ?? ''}
-                                            onChange={(e) => setCoverUrl(e.target.value || null)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Artist</label>
-                                        <input
-                                            type="text"
-                                            value={artist}
-                                            onChange={(e) => setArtist(e.target.value)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                                            placeholder="Artist Name"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Album</label>
-                                        <input
-                                            type="text"
-                                            value={album}
-                                            onChange={(e) => setAlbum(e.target.value)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                                            placeholder="Album Name"
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Genre</label>
-                                        <input
-                                            type="text"
-                                            value={genre}
-                                            onChange={(e) => setGenre(e.target.value)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                                            placeholder="Pop, Rock..."
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Language</label>
-                                        <select
-                                            value={language}
-                                            onChange={(e) => setLanguage(e.target.value)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                                        >
-                                            <option value="">Select language</option>
-                                            <option value="English">English</option>
-                                            <option value="Malayalam">Malayalam</option>
-                                            <option value="Manglish">Manglish</option>
-                                            <option value="Other">Other</option>
-                                        </select>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Category</label>
-                                        <select
-                                            value={categoryId}
-                                            onChange={(e) => setCategoryId(e.target.value)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                                        >
-                                            <option value="">No category</option>
-                                            {categories.map(c => (
-                                                <option key={c.id} value={c.id}>{c.name}</option>
+                                <div className="p-6 overflow-y-auto custom-scrollbar">
+                                    <form onSubmit={handleSubmit} className="space-y-5">
+                                        {/* Tabs */}
+                                        <div className="flex p-1 bg-slate-100 rounded-xl mb-6">
+                                            {['details', 'content', 'moderation'].map((t) => (
+                                                <button
+                                                    key={t}
+                                                    type="button"
+                                                    onClick={() => setActiveTab(t as any)}
+                                                    className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${activeTab === t ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                                                >
+                                                    {t.charAt(0).toUpperCase() + t.slice(1)}
+                                                </button>
                                             ))}
-                                        </select>
-                                        <button type="button" onClick={() => setShowCatMgr(!showCatMgr)} className="mt-2 text-[11px] text-blue-600 hover:underline">{showCatMgr ? 'Hide' : 'Manage'} categories</button>
-                                        {showCatMgr && (
-                                            <div className="mt-2 rounded-lg border border-slate-200 p-2 max-h-48 overflow-auto">
-                                                <div className="flex gap-2 mb-2">
-                                                    <input value={newCategoryName} onChange={(e)=>setNewCategoryName(e.target.value)} placeholder="New category name" className="flex-1 px-2 py-1 border rounded" />
-                                                    <button type="button" className="px-2 py-1 text-xs rounded bg-blue-600 text-white" onClick={addCategory}>Add</button>
+                                        </div>
+
+                                        {/* Details Tab */}
+                                        {activeTab === 'details' && (
+                                            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                                <div>
+                                                    <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Title</label>
+                                                    <input
+                                                        type="text"
+                                                        value={title}
+                                                        onChange={(e) => setTitle(e.target.value)}
+                                                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all font-medium"
+                                                        placeholder="Song Title"
+                                                        required
+                                                    />
                                                 </div>
-                                                <ul className="space-y-1">
-                                                    {categories.map(c => (
-                                                        <li key={c.id} className="flex items-center gap-2 text-xs">
-                                                            <input defaultValue={c.name} className="flex-1 px-2 py-1 border rounded" onBlur={(e)=>{ const v=e.target.value.trim(); if(v && v!==c.name) renameCategory(c.id, v); }} />
-                                                            <button type="button" className="px-2 py-1 rounded bg-red-50 text-red-600 border border-red-200" onClick={() => deleteCategory(c.id)}>Delete</button>
-                                                        </li>
-                                                    ))}
-                                                </ul>
+
+                                                {/* Simplified Cover Image */}
+                                                <div>
+                                                    <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Cover</label>
+                                                    <div className="flex gap-3 items-start">
+                                                        {coverUrl ? (
+                                                            <div className="w-20 h-20 rounded-lg overflow-hidden shrink-0 border border-slate-200 shadow-sm group relative">
+                                                                <img src={coverUrl} alt="Cover" className="w-full h-full object-cover" />
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => setCoverUrl(null)}
+                                                                    className="absolute inset-0 bg-black/40 bg-backdrop-blur flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-white"
+                                                                >
+                                                                    <X size={16} />
+                                                                </button>
+                                                            </div>
+                                                        ) : (
+                                                            <div
+                                                                onClick={() => (document.getElementById('cover-upload') as HTMLInputElement)?.click()}
+                                                                className="w-20 h-20 rounded-lg shrink-0 border-2 border-dashed border-slate-300 hover:border-blue-400 hover:bg-blue-50 transition-all flex flex-col items-center justify-center cursor-pointer text-slate-400"
+                                                            >
+                                                                <Plus size={20} />
+                                                                <span className="text-[10px] mt-1">Upload</span>
+                                                            </div>
+                                                        )}
+                                                        <div className="flex-1 space-y-2">
+                                                            <input
+                                                                id="cover-upload"
+                                                                type="file"
+                                                                accept="image/*"
+                                                                onChange={async (e) => {
+                                                                    const file = e.target.files?.[0];
+                                                                    if (!file) return;
+                                                                    const fileName = `${Date.now()}_${file.name}`;
+                                                                    const { data, error } = await supabase.storage.from('covers').upload(fileName, file);
+                                                                    if (!error && data) {
+                                                                        const { data: pub } = supabase.storage.from('covers').getPublicUrl(data.path);
+                                                                        setCoverUrl(pub.publicUrl);
+                                                                    }
+                                                                }}
+                                                                className="hidden"
+                                                            />
+                                                            <input
+                                                                type="url"
+                                                                placeholder="https://..."
+                                                                value={coverUrl ?? ''}
+                                                                onChange={(e) => setCoverUrl(e.target.value || null)}
+                                                                className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500"
+                                                            />
+                                                            <p className="text-[10px] text-slate-400 leading-tight">Upload or paste URL.</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Artist</label>
+                                                        <input
+                                                            type="text"
+                                                            value={artist}
+                                                            onChange={(e) => setArtist(e.target.value)}
+                                                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+                                                            placeholder="Artist"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Album</label>
+                                                        <input
+                                                            type="text"
+                                                            value={album}
+                                                            onChange={(e) => setAlbum(e.target.value)}
+                                                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+                                                            placeholder="Album"
+                                                        />
+                                                    </div>
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Genre</label>
+                                                        <input
+                                                            type="text"
+                                                            value={genre}
+                                                            onChange={(e) => setGenre(e.target.value)}
+                                                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+                                                            placeholder="Genre"
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Language</label>
+                                                        <select
+                                                            value={language}
+                                                            onChange={(e) => setLanguage(e.target.value)}
+                                                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+                                                        >
+                                                            <option value="">Select...</option>
+                                                            <option value="English">English</option>
+                                                            <option value="Malayalam">Malayalam</option>
+                                                            <option value="Manglish">Manglish</option>
+                                                            <option value="Other">Other</option>
+                                                        </select>
+                                                    </div>
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Category</label>
+                                                        <select
+                                                            value={categoryId}
+                                                            onChange={(e) => setCategoryId(e.target.value)}
+                                                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+                                                        >
+                                                            <option value="">None</option>
+                                                            {categories.map(c => (
+                                                                <option key={c.id} value={c.id}>{c.name}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Duration (s)</label>
+                                                        <input
+                                                            type="number"
+                                                            value={duration}
+                                                            onChange={(e) => setDuration(e.target.value)}
+                                                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm"
+                                                            placeholder="210"
+                                                        />
+                                                    </div>
+                                                </div>
+
+                                                <div className="pt-2 border-t border-slate-100 mt-4">
+                                                    <div className="flex items-center justify-between mb-4">
+                                                        <label className="text-xs font-bold text-slate-500 uppercase tracking-wide">Status</label>
+                                                        <select
+                                                            value={status}
+                                                            onChange={(e) => setStatus(e.target.value)}
+                                                            className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-blue-500 font-medium"
+                                                        >
+                                                            <option value="draft">Draft</option>
+                                                            <option value="published">Published</option>
+                                                            <option value="archived">Archived</option>
+                                                        </select>
+                                                    </div>
+                                                    <div className="flex items-center gap-3">
+                                                        <input
+                                                            type="checkbox"
+                                                            id="featured"
+                                                            checked={featured}
+                                                            onChange={(e) => setFeatured(e.target.checked)}
+                                                            className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 border-slate-300"
+                                                        />
+                                                        <label htmlFor="featured" className="text-sm font-medium text-slate-700">Mark as Featured</label>
+                                                    </div>
+                                                </div>
                                             </div>
                                         )}
-                                    </div>
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Duration (sec)</label>
-                                        <input
-                                            type="number"
-                                            inputMode="numeric"
-                                            value={duration}
-                                            onChange={(e) => setDuration(e.target.value)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                                            placeholder="e.g. 210"
-                                            min={0}
-                                        />
-                                    </div>
-                                </div>
 
-                                <div className="grid grid-cols-2 gap-4 items-center">
-                                    <div>
-                                        <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Status</label>
-                                        <select
-                                            value={status}
-                                            onChange={(e) => setStatus(e.target.value)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                                        >
-                                            <option value="draft">Draft</option>
-                                            <option value="published">Published</option>
-                                            <option value="archived">Archived</option>
-                                        </select>
-                                    </div>
-                                    <div className="flex items-center gap-2 mt-5">
-                                        <input
-                                            type="checkbox"
-                                            id="featured"
-                                            checked={featured}
-                                            onChange={(e) => setFeatured(e.target.checked)}
-                                            className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 border-gray-300"
-                                        />
-                                        <label htmlFor="featured" className="text-sm font-medium text-slate-700">Featured Song</label>
-                                    </div>
-                                </div>
-                                </>
-                                )}
-
-                                {/* Content Tab */}
-                                {activeTab === 'content' && (
-                                <>
-                                    <div onDragOver={(e)=>e.preventDefault()} onDrop={handleLyricsDrop}>
-                                        <div className="flex items-center justify-between">
-                                            <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Lyrics</label>
-                                            <div className="flex items-center gap-2">
-                                                <button type="button" className="text-[11px] px-2 py-1 border rounded text-slate-600 border-slate-200 hover:bg-slate-50" onClick={() => copyToClipboard(lyrics)}>Copy</button>
-                                                <label className="text-[11px] px-2 py-1 border rounded cursor-pointer text-slate-600 border-slate-200 hover:bg-slate-50">
-                                                Import .txt
-                                                <input type="file" accept=".txt,text/plain" className="hidden" onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                                                    const file = e.target.files?.[0];
-                                                    if (!file) return;
-                                                    const reader = new FileReader();
-                                                    reader.onload = () => setLyrics(String(reader.result ?? ''));
-                                                    reader.readAsText(file);
-                                                }} />
-                                                </label>
-                                            </div>
-                                        </div>
-                                        <textarea
-                                            value={lyrics}
-                                            onChange={(e) => { setLyrics(e.target.value); autoResize(e.target); }}
-                                            ref={(el) => autoResize(el)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all h-40 resize-none font-mono text-sm"
-                                            placeholder="Enter lyrics..."
-                                        />
-                                    </div>
-
-                                    <div onDragOver={(e)=>e.preventDefault()} onDrop={handleChordsDrop}>
-                                        <div className="flex items-center justify-between">
-                                            <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Chords</label>
-                                            <div className="flex items-center gap-2">
-                                                <button type="button" className="text-[11px] px-2 py-1 border rounded text-slate-600 border-slate-200 hover:bg-slate-50" onClick={() => copyToClipboard(chords)}>Copy</button>
-                                                <label className="text-[11px] px-2 py-1 border rounded cursor-pointer text-slate-600 border-slate-200 hover:bg-slate-50">
-                                                Import .txt
-                                                <input type="file" accept=".txt,text/plain" className="hidden" onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                                                    const file = e.target.files?.[0];
-                                                    if (!file) return;
-                                                    const reader = new FileReader();
-                                                    reader.onload = () => setChords(String(reader.result ?? ''));
-                                                    reader.readAsText(file);
-                                                }} />
-                                                </label>
-                                            </div>
-                                        </div>
-                                        <textarea
-                                            value={chords}
-                                            onChange={(e) => { setChords(e.target.value); autoResize(e.target); }}
-                                            ref={(el) => autoResize(el, 64)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all h-32 resize-none font-mono text-sm"
-                                            placeholder="Enter chords..."
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <div className="flex items-center justify-between">
-                                            <label className="block text-xs font-medium text-slate-500 mb-1 uppercase tracking-wide">Lyrics (ChordPro)</label>
-                                            <button type="button" className="text-[11px] px-2 py-1 border rounded text-slate-600 border-slate-200 hover:bg-slate-50" onClick={() => copyToClipboard(lyricsChordpro)}>Copy</button>
-                                        </div>
-                                        <textarea
-                                            value={lyricsChordpro}
-                                            onChange={(e) => { setLyricsChordpro(e.target.value); autoResize(e.target); }}
-                                            ref={(el) => autoResize(el, 64)}
-                                            className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all h-32 resize-none font-mono text-sm"
-                                            placeholder="[C] Hello [G] world..."
-                                        />
-                                        <p className="text-[11px] text-slate-500 mt-1">Optional. Supports ChordPro format. If provided, the app can render chords inline.</p>
-                                    </div>
-                                </>
-                                )}
-
-                                {/* Moderation Tab */}
-                                {activeTab === 'moderation' && (
-                                <>
-                                    {/* Approvals */}
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div className="flex items-center gap-2">
-                                            <input
-                                                type="checkbox"
-                                                id="lyricsApproved"
-                                                checked={lyricsApproved}
-                                                onChange={(e) => setLyricsApproved(e.target.checked)}
-                                                className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 border-gray-300"
-                                            />
-                                            <label htmlFor="lyricsApproved" className="text-sm font-medium text-slate-700">Lyrics Approved</label>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <input
-                                                type="checkbox"
-                                                id="chordsApproved"
-                                                checked={chordsApproved}
-                                                onChange={(e) => setChordsApproved(e.target.checked)}
-                                                className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500 border-gray-300"
-                                            />
-                                            <label htmlFor="chordsApproved" className="text-sm font-medium text-slate-700">Chords Approved</label>
-                                        </div>
-                                    </div>
-
-                                    {/* Pending moderation helpers */}
-                                    {(pendingLyrics || pendingChords) && (
-                                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
-                                            <p className="text-xs font-semibold text-amber-700 mb-2">Pending Submissions</p>
-                                            {pendingLyrics && (
-                                                <div className="mb-3">
-                                                    <label className="block text-[11px] text-amber-700 mb-1">Pending Lyrics</label>
+                                        {/* Content Tab */}
+                                        {activeTab === 'content' && (
+                                            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                                <div onDragOver={(e) => e.preventDefault()} onDrop={handleLyricsDrop}>
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <label className="text-xs font-bold text-slate-500 uppercase tracking-wide">Lyrics</label>
+                                                        <button type="button" onClick={() => copyToClipboard(lyrics)} className="text-[10px] text-blue-600 hover:text-blue-700 font-medium">Copy</button>
+                                                    </div>
                                                     <textarea
-                                                        readOnly
-                                                        value={pendingLyrics}
-                                                        className="w-full px-3 py-2 bg-white border border-amber-200 rounded-lg h-24 text-xs"
+                                                        value={lyrics}
+                                                        onChange={(e) => { setLyrics(e.target.value); autoResize(e.target); }}
+                                                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all h-40 font-mono text-sm leading-relaxed resize-none"
+                                                        placeholder="Enter lyrics here..."
                                                     />
-                                                    <div className="flex gap-2 mt-2">
-                                                        <button type="button" className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white"
-                                                            onClick={approvePendingLyrics}>
-                                                            Approve → Move to Lyrics
-                                                        </button>
-                                                        <button type="button" className="px-3 py-1.5 text-xs rounded bg-red-600 text-white"
-                                                            onClick={rejectPendingLyrics}>
-                                                            Reject
-                                                        </button>
+                                                </div>
+
+                                                <div onDragOver={(e) => e.preventDefault()} onDrop={handleChordsDrop}>
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <label className="text-xs font-bold text-slate-500 uppercase tracking-wide">Chords</label>
+                                                        <button type="button" onClick={() => copyToClipboard(chords)} className="text-[10px] text-blue-600 hover:text-blue-700 font-medium">Copy</button>
+                                                    </div>
+                                                    <textarea
+                                                        value={chords}
+                                                        onChange={(e) => { setChords(e.target.value); autoResize(e.target); }}
+                                                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all h-32 font-mono text-sm leading-relaxed resize-none"
+                                                        placeholder="Enter chords..."
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Moderation Tab */}
+                                        {activeTab === 'moderation' && (
+                                            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                                <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 flex flex-col gap-3">
+                                                    <div className="flex items-center gap-3">
+                                                        <input
+                                                            type="checkbox"
+                                                            id="lyricsApproved"
+                                                            checked={lyricsApproved}
+                                                            onChange={(e) => setLyricsApproved(e.target.checked)}
+                                                            className="w-5 h-5 text-emerald-500 rounded focus:ring-emerald-500 border-slate-300"
+                                                        />
+                                                        <label htmlFor="lyricsApproved" className="text-sm font-medium text-slate-700">Lyrics Approved</label>
+                                                    </div>
+                                                    <div className="flex items-center gap-3">
+                                                        <input
+                                                            type="checkbox"
+                                                            id="chordsApproved"
+                                                            checked={chordsApproved}
+                                                            onChange={(e) => setChordsApproved(e.target.checked)}
+                                                            className="w-5 h-5 text-emerald-500 rounded focus:ring-emerald-500 border-slate-300"
+                                                        />
+                                                        <label htmlFor="chordsApproved" className="text-sm font-medium text-slate-700">Chords Approved</label>
                                                     </div>
                                                 </div>
-                                            )}
-                                            {pendingChords && (
-                                                <div>
-                                                    <label className="block text-[11px] text-amber-700 mb-1">Pending Chords</label>
-                                                    <textarea
-                                                        readOnly
-                                                        value={pendingChords}
-                                                        className="w-full px-3 py-2 bg-white border border-amber-200 rounded-lg h-24 text-xs"
-                                                    />
-                                                    <div className="flex gap-2 mt-2">
-                                                        <button type="button" className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white"
-                                                            onClick={approvePendingChords}>
-                                                            Approve → Move to Chords
-                                                        </button>
-                                                        <button type="button" className="px-3 py-1.5 text-xs rounded bg-red-600 text-white"
-                                                            onClick={rejectPendingChords}>
-                                                            Reject
-                                                        </button>
+
+                                                {(pendingLyrics || pendingChords) && (
+                                                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                                                        <h4 className="text-sm font-bold text-amber-800 mb-3 flex items-center gap-2">
+                                                            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                                                            Pending Changes
+                                                        </h4>
+                                                        {pendingLyrics && (
+                                                            <div className="mb-4">
+                                                                <p className="text-xs font-semibold text-amber-700/70 mb-1">New Lyrics</p>
+                                                                <div className="bg-white p-2 rounded border border-amber-100 text-xs font-mono max-h-24 overflow-y-auto mb-2 opacity-80">{pendingLyrics}</div>
+                                                                <div className="flex gap-2">
+                                                                    <button type="button" className="px-3 py-1.5 text-xs font-bold rounded bg-emerald-600 text-white shadow-sm hover:bg-emerald-700" onClick={approvePendingLyrics}>Accept</button>
+                                                                    <button type="button" className="px-3 py-1.5 text-xs font-bold rounded bg-white text-slate-600 border border-slate-200 hover:bg-slate-50" onClick={rejectPendingLyrics}>Reject</button>
+                                                                </div>
+                                                            </div>
+                                                        )}
                                                     </div>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                </>
-                                )}
-
-                                <button
-                                    type="submit"
-                                    id="save-song-btn"
-                                    disabled={isSaving}
-                                    className={`w-full py-3 ${isSaving ? 'bg-blue-400' : 'bg-blue-600 hover:bg-blue-700'} text-white font-medium rounded-xl shadow-lg shadow-blue-600/20 transition-all flex items-center justify-center gap-2`}
-                                >
-                                    <Save size={18} />
-                                    {isSaving ? 'Saving...' : (editId ? 'Update Song' : 'Save Song')}
-                                </button>
-                            </form>
-                        </div>
-                    </div>
-                )}
-
-                {/* List Section */}
-                <div className={`${isEditing ? 'lg:col-span-2' : 'lg:col-span-3'} transition-all duration-300`}>
-                    {/* Toolbar */}
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4 px-1">
-                        <div className="flex-1">
-                            <input
-                                type="text"
-                                value={query}
-                                onChange={(e) => setQuery(e.target.value)}
-                                placeholder="Search by title, artist, genre..."
-                                className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                            />
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <select
-                                value={statusFilter}
-                                onChange={(e) => setStatusFilter(e.target.value)}
-                                className="px-3 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                            >
-                                <option value="">All statuses</option>
-                                <option value="draft">Draft</option>
-                                <option value="published">Published</option>
-                                <option value="archived">Archived</option>
-                            </select>
-                        </div>
-                    </div>
-                    {loading ? (
-                        <div className="flex items-center justify-center h-64">
-                            <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-                        </div>
-                    ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                            {filteredSongs.map((song) => (
-                                <div
-                                    key={song.id}
-                                    className="group bg-white border border-slate-100 rounded-2xl p-5 hover:shadow-xl hover:shadow-blue-600/5 hover:border-blue-100 transition-all duration-300 relative overflow-hidden"
-                                >
-                                    <div className="absolute top-0 right-0 p-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-2 bg-gradient-to-l from-white via-white to-transparent pl-8">
-                                        <button
-                                            onClick={() => handleEdit(song)}
-                                            className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                                        >
-                                            <Edit2 size={16} />
-                                        </button>
-                                        <button
-                                            onClick={() => duplicateSong(song)}
-                                            className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
-                                            title="Duplicate"
-                                        >
-                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4"><path d="M7 7a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V7z"/><path d="M5 9v8a2 2 0 0 0 2 2h8" fill="none" stroke="currentColor" strokeWidth="1.5"/></svg>
-                                        </button>
-                                        <button
-                                            onClick={() => handleDelete(song.id)}
-                                            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
-                                        >
-                                            <Trash2 size={16} />
-                                        </button>
-                                    </div>
-
-                                    <div className="flex items-start gap-4 mb-4">
-                                        <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center shrink-0">
-                                            <Music size={24} />
-                                        </div>
-                                        <div>
-                                            <h4 className="font-bold text-slate-800 line-clamp-1">{song.title}</h4>
-                                            <p className="text-sm text-slate-500">{song.artist || 'Unknown Artist'}</p>
-                                            <div className="flex flex-wrap gap-2 mt-1 items-center">
-                                                {song.genre && <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">{song.genre}</span>}
-                                                {song.status === 'published' && <span className="text-[10px] px-2 py-0.5 bg-green-100 text-green-600 rounded-full">Published</span>}
-                                                {song.pending_lyrics && <span className="text-[10px] px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">Pending Lyrics</span>}
-                                                {song.pending_chords && <span className="text-[10px] px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">Pending Chords</span>}
-                                                {song.lyrics_approved === false && <span className="text-[10px] px-2 py-0.5 bg-red-100 text-red-600 rounded-full">Lyrics Unapproved</span>}
-                                                {song.chords_approved === false && <span className="text-[10px] px-2 py-0.5 bg-red-100 text-red-600 rounded-full">Chords Unapproved</span>}
-                                                <span className="text-[10px] px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">{timeAgo(song.created_at)}</span>
+                                                )}
                                             </div>
+                                        )}
+
+                                        <div className="pt-4 border-t border-slate-100">
+                                            <button
+                                                type="submit"
+                                                disabled={isSaving}
+                                                className={`w-full py-3 ${isSaving ? 'bg-slate-100 text-slate-400' : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-600/30'} font-bold rounded-xl transition-all flex items-center justify-center gap-2`}
+                                            >
+                                                <Save size={18} />
+                                                {isSaving ? 'Saving...' : (editId ? 'Save Changes' : 'Create Song')}
+                                            </button>
                                         </div>
-                                    </div>
-
-                                    <div className="bg-slate-50 rounded-xl p-3 h-32 overflow-hidden relative">
-                                        <p className="text-xs text-slate-600 whitespace-pre-wrap font-medium leading-relaxed font-mono">
-                                            {song.lyrics || song.chords || 'No content available...'}
-                                        </p>
-                                        <div className="absolute bottom-0 left-0 right-0 h-12 bg-gradient-to-t from-slate-50 to-transparent"></div>
-                                    </div>
+                                    </form>
                                 </div>
-                            ))}
-
-                            {filteredSongs.length === 0 && !loading && (
-                                <div className="col-span-full flex flex-col items-center justify-center py-20 text-slate-400 bg-slate-50/50 rounded-3xl border border-dashed border-slate-200">
-                                    <Music size={48} className="mb-4 opacity-20" />
-                                    <p>No songs found. Try adjusting your search/filters or add a new song.</p>
-                                </div>
-                            )}
+                            </div>
                         </div>
                     )}
+
+                    {/* List Section */}
+                    <div className="col-span-1 transition-all duration-500">
+                        {/* Toolbar */}
+                        {selectedIds.length > 0 ? (
+                            <div className="bg-blue-600 text-white p-3 rounded-2xl shadow-lg mb-6 flex items-center justify-between animate-in fade-in slide-in-from-top-2">
+                                <div className="flex items-center gap-4 px-2">
+                                    <div className="flex items-center gap-2">
+                                        <button onClick={clearSelection} className="p-1 hover:bg-blue-500 rounded-full transition-colors"><X size={18} /></button>
+                                        <span className="font-bold text-sm">{selectedIds.length} Selected</span>
+                                    </div>
+                                    <div className="h-6 w-px bg-blue-500"></div>
+                                    <button onClick={selectAllVisible} className="text-xs font-semibold hover:text-blue-100 transition-colors">Select All</button>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={bulkDeleteSelected}
+                                        className="flex items-center gap-2 px-4 py-2 bg-white text-red-600 rounded-xl text-xs font-bold shadow-sm hover:bg-red-50 transition-all"
+                                    >
+                                        <Trash2 size={14} />
+                                        Delete Selected
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="bg-white p-2 rounded-2xl border border-slate-100 shadow-sm mb-6 flex flex-col md:flex-row gap-2">
+                                <div className="flex-1 relative">
+                                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+                                    <input
+                                        type="text"
+                                        value={query}
+                                        onChange={(e) => setQuery(e.target.value)}
+                                        placeholder="Search library..."
+                                        className="w-full pl-12 pr-4 py-3 bg-transparent text-sm font-medium focus:outline-none text-slate-700 placeholder:text-slate-400"
+                                    />
+                                </div>
+                                <div className="w-px bg-slate-100 hidden md:block my-2"></div>
+                                <div className="flex items-center p-1">
+                                    <select
+                                        value={statusFilter}
+                                        onChange={(e) => setStatusFilter(e.target.value)}
+                                        className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-semibold text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/10 hover:bg-slate-100 transition-colors cursor-pointer"
+                                    >
+                                        <option value="">All Statuses</option>
+                                        <option value="draft">Drafts</option>
+                                        <option value="published">Published</option>
+                                        <option value="archived">Archived</option>
+                                    </select>
+                                </div>
+                            </div>
+                        )}
+
+                        {loading ? (
+                            <div className="flex items-center justify-center h-64">
+                                <Loader2 className="w-10 h-10 text-blue-600 animate-spin opacity-50" />
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-6">
+                                {filteredSongs.map((song) => {
+                                    const isSelected = selectedIds.includes(song.id);
+                                    return (
+                                        <div
+                                            key={song.id}
+                                            className={`group bg-white rounded-3xl p-6 shadow-[0_2px_20px_-4px_rgba(0,0,0,0.05)] border transition-all duration-300 relative flex flex-col items-start h-full
+                                            ${isSelected ? 'border-blue-500 ring-2 ring-blue-500/20' : 'border-slate-100 hover:border-blue-200 hover:shadow-[0_8px_30px_-4px_rgba(59,130,246,0.1)]'}
+                                        `}
+                                        >
+                                            <div className="absolute top-4 left-4 z-10">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isSelected}
+                                                    onChange={(e) => toggleSelect(song.id, e.target.checked)}
+                                                    className={`w-5 h-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 transition-opacity cursor-pointer
+                                                    ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}
+                                                `}
+                                                />
+                                            </div>
+
+                                            <div className="flex items-start justify-between w-full mb-4 pl-8">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/20 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform duration-300">
+                                                        {song.cover_url ? (
+                                                            <img src={song.cover_url} alt={song.title} className="w-full h-full object-cover rounded-2xl opacity-90" />
+                                                        ) : (
+                                                            <Music size={24} strokeWidth={2.5} />
+                                                        )}
+                                                    </div>
+                                                    <div>
+                                                        <h4 className="font-bold text-slate-900 text-lg leading-tight line-clamp-1 group-hover:text-blue-700 transition-colors" title={song.title}>{song.title}</h4>
+                                                        <p className="text-sm text-slate-500 font-medium mt-0.5 line-clamp-1">{song.artist || 'Unknown Artist'}</p>
+                                                    </div>
+                                                </div>
+
+                                                {/* Top Actions */}
+                                                <div className=" opacity-0 group-hover:opacity-100 transition-opacity absolute top-4 right-4 flex bg-white/90 backdrop-blur-sm rounded-xl border border-slate-100 shadow-sm p-1 z-20">
+                                                    <button onClick={() => handleEdit(song)} className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all" title="Edit">
+                                                        <Edit2 size={16} />
+                                                    </button>
+                                                    <button onClick={() => duplicateSong(song)} className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all" title="Duplicate">
+                                                        <CopyIcon size={16} />
+                                                    </button>
+                                                    <button onClick={() => handleDelete(song.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="Delete">
+                                                        <Trash2 size={16} />
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-wrap gap-2 mb-4 text-left w-full pl-1">
+                                                <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${song.status === 'published' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
+                                                    song.status === 'archived' ? 'bg-slate-100 text-slate-500 border-slate-200' :
+                                                        'bg-amber-50 text-amber-600 border-amber-100'
+                                                    }`}>
+                                                    {song.status || 'Draft'}
+                                                </span>
+                                                <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-50 text-slate-500 border border-slate-100">
+                                                    {timeAgo(song.created_at)}
+                                                </span>
+                                                {song.genre && <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-blue-50 text-blue-600 border border-blue-100">{song.genre}</span>}
+                                            </div>
+
+                                            {/* Lyrics Preview */}
+                                            <div className="w-full flex-1 bg-slate-50/50 rounded-xl p-4 border border-slate-50 overflow-hidden relative group/lyrics transition-colors group-hover:bg-slate-50/80">
+                                                <p className="text-xs text-slate-600 font-medium leading-relaxed font-sans opacity-80 whitespace-pre-line line-clamp-4">
+                                                    {song.lyrics || song.chords || <span className="italic text-slate-400">No lyrics added yet...</span>}
+                                                </p>
+                                                <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-white via-white/80 to-transparent"></div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+
+                                {filteredSongs.length === 0 && !loading && (
+                                    <div className="col-span-full py-20 flex flex-col items-center justify-center text-center bg-white rounded-3xl border border-dashed border-slate-200">
+                                        <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mb-4">
+                                            <Music size={32} className="text-slate-300" />
+                                        </div>
+                                        <h3 className="text-lg font-bold text-slate-800">No songs found</h3>
+                                        <p className="text-slate-500 text-sm mt-1 max-w-xs mx-auto">Try adjusting your search terms or add a new song to your collection.</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* Toast Container */}
+                <div className="fixed bottom-6 right-6 flex flex-col gap-3 z-50 pointer-events-none">
+                    {toasts.map(t => (
+                        <div key={t.id} className={`pointer-events-auto px-5 py-3 rounded-xl shadow-xl border flex items-center gap-3 animate-in slide-in-from-right-10 duration-300 ${t.type === 'success' ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-white border-red-100 text-red-600'}`}>
+                            {t.type === 'success' ? <div className="w-2 h-2 bg-white rounded-full"></div> : <div className="w-2 h-2 bg-red-500 rounded-full"></div>}
+                            <span className="font-semibold text-sm">{t.message}</span>
+                        </div>
+                    ))}
                 </div>
             </div>
-            {/* Toast queue */}
-            <div className="fixed bottom-4 right-4 flex flex-col gap-2 z-50">
-                {toasts.map(t => (
-                    <div key={t.id} className={`px-4 py-2 rounded-lg shadow text-sm animate-[fadeIn_.2s_ease-out] ${t.type==='success' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'}`}>
-                        {t.message}
-                    </div>
-                ))}
-            </div>
-        </Layout>
+        </Layout >
     );
 }
+
+
+
+
