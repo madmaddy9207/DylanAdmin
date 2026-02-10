@@ -465,6 +465,169 @@ export default function LyricsPage() {
         }
     };
 
+    const isValidUrl = (url: string | null | undefined) => {
+        if (!url) return false;
+        try {
+            // Check for http/https or data URI scheme
+            return /^https?:\/\//i.test(url) || /^data:image\//i.test(url);
+        } catch (e) {
+            return false;
+        }
+    };
+
+    // Bulk import from CSV file
+    const handleMassCsvImport = async (file: File | null) => {
+        if (!file) return;
+        try {
+            const text = await file.text();
+
+            // Robust CSV Parser (State Machine)
+            const parseCsv = (input: string) => {
+                const rows: string[][] = [];
+                let currentRow: string[] = [];
+                let currentVal = '';
+                let inQuotes = false;
+
+                for (let i = 0; i < input.length; i++) {
+                    const char = input[i];
+                    const nextChar = input[i + 1];
+
+                    if (char === '"') {
+                        if (inQuotes && nextChar === '"') {
+                            // Escaped quote: "" -> "
+                            currentVal += '"';
+                            i++; // Skip next quote
+                        } else {
+                            // Toggle quote state
+                            inQuotes = !inQuotes;
+                        }
+                    } else if (char === ',' && !inQuotes) {
+                        // Field delimiter
+                        currentRow.push(currentVal.trim()); // Trim whitespace around value
+                        currentVal = '';
+                    } else if ((char === '\r' || char === '\n') && !inQuotes) {
+                        // Row delimiter
+                        if (char === '\r' && nextChar === '\n') {
+                            i++; // Skip \n
+                        }
+                        // End of row
+                        currentRow.push(currentVal.trim());
+                        // Only add non-empty rows (avoid empty lines at end of file)
+                        if (currentRow.length > 0 && currentRow.some(c => c !== '')) {
+                            rows.push(currentRow);
+                        }
+                        currentRow = [];
+                        currentVal = '';
+                    } else {
+                        // Regular character
+                        currentVal += char;
+                    }
+                }
+
+                // Push last row if exists
+                if (currentVal || currentRow.length > 0) {
+                    currentRow.push(currentVal.trim());
+                    if (currentRow.length > 0 && currentRow.some(c => c !== '')) {
+                        rows.push(currentRow);
+                    }
+                }
+
+                return rows;
+            };
+
+            const rows = parseCsv(text);
+
+            if (rows.length < 2) {
+                enqueueToast({ type: 'error', message: 'CSV file is empty or missing headers' });
+                return;
+            }
+
+            // Map header index to key
+            const headerMap: Record<string, number> = {};
+            const rawHeaders = rows[0];
+            rawHeaders.forEach((h, i) => {
+                headerMap[h.trim().toLowerCase()] = i; // Store lowercase keys
+            });
+
+            const songsToInsert: any[] = [];
+
+            for (let i = 1; i < rows.length; i++) {
+                const values = rows[i];
+                // Helper to get value securely
+                const getVal = (key: string) => values[headerMap[key.toLowerCase()]] || '';
+
+                // Mapping
+                const songTitle = getVal('song_title');
+                if (!songTitle) continue; // Skip empty titles
+
+                const categoryName = getVal('category');
+                let categoryId = null;
+                if (categoryName) {
+                    const cat = categories.find(c => c.name.toLowerCase() === categoryName.toLowerCase());
+                    if (cat) categoryId = cat.id;
+                }
+
+                // Sanitize URL
+                let coverUrlVal = getVal('cover_image_url');
+                if (coverUrlVal && !isValidUrl(coverUrlVal)) {
+                    coverUrlVal = ''; // Discard invalid URL to prevent 404s
+                }
+
+                songsToInsert.push({
+                    title: songTitle,
+                    cover_url: coverUrlVal || null,
+                    artist: getVal('artist_name') || null,
+                    album: getVal('album') || null,
+                    genre: getVal('genre') || null,
+                    category_id: categoryId,
+                    lyrics: getVal('lyrics') || null,
+                    // Defaults
+                    language: 'English',
+                    status: 'draft',
+                    featured: false,
+                    chords: null,
+                    lyrics_chordpro: null,
+                    duration: null,
+                    pending_lyrics: null,
+                    pending_chords: null,
+                    lyrics_approved: true,
+                    chords_approved: true
+                });
+            }
+
+            if (!songsToInsert.length) {
+                enqueueToast({ type: 'error', message: 'No valid songs found in CSV' });
+                return;
+            }
+
+            const resp = await fetch('/api/songs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'bulk_insert', data: songsToInsert })
+            });
+
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok && resp.status !== 207) throw new Error(json?.error || 'Bulk insert failed');
+            const inserted = json?.inserted ?? 0;
+            const errors = json?.errors ?? [];
+            const skipped = json?.skipped ?? [];
+
+            if (errors.length > 0) {
+                const preview = errors.slice(0, 3).map((e: any) => `#${e.index}: ${e.error} `).join(' | ');
+                enqueueToast({ type: 'error', message: `Imported ${inserted} with ${errors.length} error(s): ${preview} and skipped ${skipped.length} ` });
+            } else if (skipped.length > 0) {
+                enqueueToast({ type: 'success', message: `Imported ${inserted} song(s), skipped ${skipped.length} duplicate(s)` });
+            } else {
+                enqueueToast({ type: 'success', message: `Imported ${inserted} song(s)` });
+            }
+            fetchSongs();
+
+        } catch (e: any) {
+            console.error('CSV import error:', e);
+            enqueueToast({ type: 'error', message: String(e?.message ?? e) });
+        }
+    };
+
     // Bulk import from JSON file
     // Download JSON template
     const downloadTemplate = () => {
@@ -532,6 +695,31 @@ export default function LyricsPage() {
         }
     };
 
+    const bulkPublishSelected = async () => {
+        if (selectedIds.length === 0) return;
+        if (!confirm(`Publish ${selectedIds.length} selected song(s)?`)) return;
+        try {
+            const resp = await fetch('/api/songs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'bulk_update',
+                    data: {
+                        ids: selectedIds,
+                        updates: { status: 'published' }
+                    }
+                })
+            });
+            const json = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(json?.error || 'Bulk publish failed');
+            enqueueToast({ type: 'success', message: `Published ${selectedIds.length} song(s)` });
+            setSelectedIds([]);
+            fetchSongs();
+        } catch (e: any) {
+            enqueueToast({ type: 'error', message: String(e?.message ?? e) });
+        }
+    };
+
     const filteredSongs = useMemo(() => {
         const q = query.trim().toLowerCase();
         return songs.filter(s => {
@@ -584,12 +772,31 @@ export default function LyricsPage() {
                                 handleMassJsonImport(file);
                             }}
                         />
+                        {/* Hidden file input for mass CSV */}
+                        <input
+                            id="mass-csv-input"
+                            type="file"
+                            accept=".csv"
+                            className="hidden"
+                            onChange={(e) => {
+                                const file = e.target.files?.[0] ?? null;
+                                e.currentTarget.value = '';
+                                handleMassCsvImport(file);
+                            }}
+                        />
                         <button
                             type="button"
                             onClick={() => { (document.getElementById('mass-json-input') as HTMLInputElement)?.click(); }}
                             className="w-full md:w-auto px-5 py-2.5 text-sm font-semibold text-slate-700 bg-white rounded-xl border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm"
                         >
                             Import JSON
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => { (document.getElementById('mass-csv-input') as HTMLInputElement)?.click(); }}
+                            className="w-full md:w-auto px-5 py-2.5 text-sm font-semibold text-slate-700 bg-white rounded-xl border border-slate-200 hover:bg-slate-50 hover:border-slate-300 transition-all shadow-sm"
+                        >
+                            Import CSV
                         </button>
                         <button
                             onClick={() => {
@@ -660,9 +867,9 @@ export default function LyricsPage() {
                                                 <div>
                                                     <label className="block text-xs font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Cover</label>
                                                     <div className="flex gap-3 items-start">
-                                                        {coverUrl ? (
+                                                        {isValidUrl(coverUrl) ? (
                                                             <div className="w-20 h-20 rounded-lg overflow-hidden shrink-0 border border-slate-200 shadow-sm group relative">
-                                                                <img src={coverUrl} alt="Cover" className="w-full h-full object-cover" />
+                                                                <img src={coverUrl!} alt="Cover" className="w-full h-full object-cover" />
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => setCoverUrl(null)}
@@ -921,6 +1128,13 @@ export default function LyricsPage() {
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <button
+                                        onClick={bulkPublishSelected}
+                                        className="flex items-center gap-2 px-4 py-2 bg-white text-emerald-600 rounded-xl text-xs font-bold shadow-sm hover:bg-emerald-50 transition-all"
+                                    >
+                                        <Save size={14} />
+                                        Publish Selected
+                                    </button>
+                                    <button
                                         onClick={bulkDeleteSelected}
                                         className="flex items-center gap-2 px-4 py-2 bg-white text-red-600 rounded-xl text-xs font-bold shadow-sm hover:bg-red-50 transition-all"
                                     >
@@ -986,8 +1200,8 @@ export default function LyricsPage() {
                                             <div className="flex items-start justify-between w-full mb-4 pl-8">
                                                 <div className="flex items-center gap-4">
                                                     <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-lg shadow-blue-500/20 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform duration-300">
-                                                        {song.cover_url ? (
-                                                            <img src={song.cover_url} alt={song.title} className="w-full h-full object-cover rounded-2xl opacity-90" />
+                                                        {isValidUrl(song.cover_url) ? (
+                                                            <img src={song.cover_url!} alt={song.title} className="w-full h-full object-cover rounded-2xl opacity-90" />
                                                         ) : (
                                                             <Music size={24} strokeWidth={2.5} />
                                                         )}
@@ -1058,6 +1272,17 @@ export default function LyricsPage() {
                             <span className="font-semibold text-sm">{t.message}</span>
                         </div>
                     ))}
+                </div>
+
+                {/* Total Count Badge */}
+                <div className="fixed bottom-6 left-6 z-40 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    <div className="bg-slate-900/90 backdrop-blur text-white px-4 py-2 rounded-full shadow-lg border border-slate-700/50 flex items-center gap-2 text-xs font-bold tracking-wide">
+                        <Music size={14} className="text-blue-400" />
+                        <span>Total Songs: {songs.length}</span>
+                        {filteredSongs.length !== songs.length && (
+                            <span className="text-slate-400 font-medium border-l border-slate-700 pl-2 ml-1">Showing: {filteredSongs.length}</span>
+                        )}
+                    </div>
                 </div>
             </div>
         </Layout >

@@ -4,6 +4,14 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE as string;
 
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '10mb',
+    },
+  },
+};
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (!supabaseUrl || !serviceKey) {
     return res.status(500).json({ error: 'Missing server env vars' });
@@ -12,7 +20,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     if (req.method === 'POST') {
-      const { action, id, data } = req.body as { action: 'insert' | 'update' | 'delete' | 'moderation' | 'bulk_insert' | 'bulk_delete'; id?: string; data?: any };
+      const { action, id, data } = req.body as { action: 'insert' | 'update' | 'delete' | 'moderation' | 'bulk_insert' | 'bulk_delete' | 'bulk_update'; id?: string; data?: any };
       if (!action) return res.status(400).json({ error: 'Missing action' });
 
       if (action === 'insert') {
@@ -169,9 +177,51 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       if (action === 'bulk_delete') {
         if (!Array.isArray(data) || data.length === 0) return res.status(400).json({ error: 'Missing ids array' });
-        const { error } = await admin.from('songs').delete().in('id', data);
-        if (error) return res.status(400).json({ error: error.message });
-        return res.status(200).json({ ok: true, deleted: data.length });
+
+        // Batch deletes to avoid URL length limits (PostgREST uses query params for DELETE filters)
+        const BATCH_SIZE = 50;
+        const chunks = [];
+        for (let i = 0; i < data.length; i += BATCH_SIZE) {
+          chunks.push(data.slice(i, i + BATCH_SIZE));
+        }
+
+        let deletedCount = 0;
+        for (const chunk of chunks) {
+          const { error } = await admin.from('songs').delete().in('id', chunk);
+          if (error) {
+            console.error('Bulk delete partial error:', error);
+            // We return error immediately, but some might have been deleted.
+            // Alternatively we could continue and report errors/partial success.
+            // For now, fail fast on error is safer to alert user.
+            return res.status(400).json({ error: `Failed at chunk: ${error.message}` });
+          }
+          deletedCount += chunk.length;
+        }
+
+        return res.status(200).json({ ok: true, deleted: deletedCount });
+      }
+
+      if (action === 'bulk_update') {
+        if (!Array.isArray(data?.ids) || data.ids.length === 0) return res.status(400).json({ error: 'Missing ids array' });
+        if (!data?.updates) return res.status(400).json({ error: 'Missing updates object' });
+
+        const ids = data.ids;
+        const updates = data.updates;
+
+        // Batch updates
+        const BATCH_SIZE = 50;
+        const chunks = [];
+        for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+          chunks.push(ids.slice(i, i + BATCH_SIZE));
+        }
+
+        for (const chunk of chunks) {
+          const { error } = await admin.from('songs').update(updates).in('id', chunk);
+          if (error) {
+            return res.status(400).json({ error: `Failed at chunk: ${error.message}` });
+          }
+        }
+        return res.status(200).json({ ok: true });
       }
 
       if (action === 'moderation') {
